@@ -1,0 +1,1030 @@
+#+TITLE: Experiment Guide for UNIX Network Programming
+#+DATE: <2019-03-26 Tue>
+#+AUTHOR: <王成琦> and <169074276>
+
+* Exp. 1st: A one-time shell "system"
+
+** README
+   Please implement a shell command, whose name is system. 
+   When executed, it requires another command as 
+   its argument, and this command could be composed by one or multiple 
+   arguments. For instance, "system" may be executed as follows:
+
+#+BEGIN_SRC sh
+  usr@~/>./system cat text.txt
+
+#+END_SRC
+
+   The command "system", implemented by you, should act like as a one-time 
+   shell to execute its argument "cat text.txt". Specifically, it should
+   at first fork a child process, between which and itself there has been 
+   a pipe. The child process duplicates its stdout (and its stderr) to the
+   write end of the pipe, with which it can transfer the output to the parent,
+   and then call some function in the "exec" family to execute the command "cat" 
+   with the argument "text.txt", for instance. On the other side of the pipe,
+   the parent should read from the read end of the pipe to receive the output
+   of the child, and print them on the displayer. After the termination of the
+   child, the parent should reap it, and then exit.
+   
+** The code
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/types.h>
+
+#define MAXN 1024
+int main(int argc,char *argv[])
+{
+    int fd[2];
+    pid_t pid;
+    char *tmp[argc];
+    char buf[1000];
+    
+    for(int i=0; i < argc-1; i++)
+    {
+        tmp[i]=argv[i+1];
+    }
+    tmp[argc-1] = NULL;
+    
+   
+    if(  pipe(fd)== -1)
+    {
+        printf("build pipe failed\n");
+        return -1;
+    }
+    
+    pid = fork();
+    
+    if(pid == -1)
+    {
+        printf("fork error\n");
+        return -1;
+    }
+    
+    if(pid == 0)
+    {
+        close(fd[0]);
+        dup2(fd[2],fileno(stdout));
+        execvp(argv[1],tmp);
+        close(fd[1]);
+        return 0;
+    }
+    else
+    {
+        close(fd[1]);
+        while((read(fd[0], buf, 1000))>0)
+        {
+            fputs(buf,stdout);
+            bzero(buf,sizeof(buf));
+        }
+        close(fd[0]);
+    }
+    return 0;
+}
+#+END_SRC 
+
+
+* Exp. 2nd: Concurrent Echo Service by TCP
+
+** README
+  In this experiment, you should implement a pair of client-server programs. The server program
+  provides Echo service with concurrent child processes. For each client request, the parent
+  server, which is responsible for listening, will fork a child process to deal with the request.
+  The child process exits after the completion of the service, and it will reaped by the parent
+  through signal handling (using system API sigaction ).
+
+  The client initiates the request by the following command:
+
+#+BEGIN_SRC sh
+unix> ./echoclient <server's IP> < file.txt
+line 1    # data echoed back by the server
+line 2
+line 3 
+...
+unix>
+#+END_SRC
+
+** The code
+  
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <errno.h>
+#include <ctype.h>
+
+int main(int argc, char *argv[])
+{
+    if(argc<2)    //检查输入参数
+        perror("argc is error");
+    
+    int sockfd;   
+    struct sockaddr_in server_addr;   
+    
+    /*socket函数*/
+    sockfd=socket(AF_INET, SOCK_STREAM, 0);
+    
+    /*配置服务器地址*/
+    bzero(&server_addr, sizeof(server_addr));
+    server_addr.sin_family=AF_INET;
+    server_addr.sin_port=htons(2222);
+    if((inet_pton(AF_INET, argv[1], &server_addr.sin_addr.s_addr)) < 0)
+        perror("invaild IP address");
+    
+
+    if(connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+        perror("can't connect to server");
+    
+    char send[1000],recv[1000];
+    bzero(send,1000);
+    bzero(recv,1000);
+    while(scanf("%s\n",send)!=EOF)
+    {
+        /*发送文本到服务器*/
+        write(sockfd, send, strlen(send));
+        
+        /*接收从服务器返回*/
+        if(read(sockfd, recv, 1000)==0)
+            perror("server terminated");
+        
+        /*打印到标准输出*/
+        fputs(recv, stdout);
+        bzero(send,sizeof(send));
+        bzero(recv,sizeof(recv));
+    }    
+    
+    return 0;
+}
+#+END_SRC 
+
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <errno.h>
+#include <ctype.h>
+
+int main(int argc, char *argv[])
+{
+	int listenfd;
+    int connfd;
+	pid_t childpid;
+	socklen_t clilen;
+	struct sockaddr_in server_addr,client_addr;
+	                                                                                             
+        listenfd = socket(AF_INET,SOCK_STREAM,0);
+	bzero(&server_addr, sizeof(struct sockaddr_in));
+	
+	server_addr.sin_family = AF_INET;
+	server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+	server_addr.sin_port = htons(2222);
+	                                                                                                                                                         
+                                                                                                          
+                                            
+    if(bind(listenfd,(struct sockaddr *)&server_addr,sizeof(server_addr)) < 0)                                 
+        perror("bind error");                                                                    
+
+    //设置可连接数为128                                                                             
+    if(listen(listenfd,128)<0)
+		perror("listen error");                                                                                
+	
+	char buf[256];
+	while(1)
+	{
+		clilen = sizeof(client_addr);
+		
+		if((connfd = accept(listenfd,(struct sockaddr*)&client_addr,&clilen))<0)
+		{
+			if(errno == EINTR)
+				continue;
+			else
+				perror("accept error");
+		}
+		
+		printf("client IP:%s %d\n",inet_ntop(AF_INET,&client_addr.sin_addr.s_addr,buf,sizeof(buf)),ntohs(client_addr.sin_port));
+		
+		
+		if((childpid = fork())==0)
+		{
+			close(listenfd);
+            ssize_t n;
+	        char buf[1000];
+            bzero(buf,1000);
+        again:
+	        while((n = read(connfd, buf, 1000)) > 0) //读取客户端的数据 
+	        {
+		        if(write(STDOUT_FILENO,buf,n)<0) //输出数据到屏幕 
+			        perror("write error");
+		        if(write(connfd,buf,n)<0)   //写数据到客户端 
+			        perror("write error");
+	        }
+	        if(n<0 && errno == EINTR)
+		        goto again;
+	        else if(n<0)
+		        perror("read error");
+            exit(0);
+		}
+        else 
+        {
+            int status;
+            wait(&status);
+        }
+		close(connfd);
+    }
+    return 0;                                                                                       
+}         
+#+END_SRC 
+
+* Exp. 3rd: IO-Multiplexing
+  
+** README
+  Use the system API "select", "poll" or "pselect" to implement the server program in the 
+  second experiment.
+
+** The code
+#+BEGIN_SRC c
+  #include <stdio.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <errno.h>
+#include <strings.h>
+#include <sys/select.h>
+
+int main(void)
+{
+    
+    int listenfd; 
+    if ((listenfd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0)
+
+       perror("socket error");
+ 
+    struct sockaddr_in servaddr;
+    memset(&servaddr, 0, sizeof(servaddr));
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_port = htons(2222);
+    servaddr.sin_addr.s_addr = htonl(INADDR_ANY); 
+    
+    int on = 1;
+    if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) < 0)
+        perror("setsockopt error");
+ 
+    if (bind(listenfd, (struct sockaddr*)&servaddr,sizeof(servaddr)) < 0)
+        perror("bind error");
+ 
+    if (listen(listenfd, SOMAXCONN) < 0) 
+        perror("listen error");
+    
+    struct sockaddr_in peeraddr; 
+    socklen_t peerlen = sizeof(peeraddr); 
+    
+    int conn; // 已连接套接字
+    int i;
+    int client[FD_SETSIZE];
+    int maxi = 0; // client数组中最大不空闲位置的下标
+    for (i = 0; i < FD_SETSIZE; i++)
+        client[i] = -1;
+ 
+    int nready;
+    int maxfd = listenfd;
+    fd_set rset;
+    fd_set allset;
+    FD_ZERO(&rset);
+    FD_ZERO(&allset);
+    FD_SET(listenfd, &allset);
+ 
+    while (1) {
+        rset = allset;
+        nready = select(maxfd + 1, &rset, NULL, NULL, NULL);
+        if (nready == -1) {
+            if (errno == EINTR)
+                continue;
+            perror("select error");
+        }
+ 
+        if (nready == 0)
+            continue;
+ 
+        if (FD_ISSET(listenfd, &rset)) {
+        
+            conn = accept(listenfd, (struct sockaddr*)&peeraddr, &peerlen);  //accept变成非阻塞
+            if (conn == -1)
+                perror("accept error");
+            
+            for (i = 0; i < FD_SETSIZE; i++) {
+                if (client[i] < 0) {
+                    client[i] = conn;
+                    if (i > maxi)
+                        maxi = i;
+                    break;
+                } 
+            }
+            
+            if (i == FD_SETSIZE) {
+                fprintf(stderr, "too many clients\n");
+                exit(EXIT_FAILURE);
+            }
+ 
+            printf("recv connect ip=%s port=%d\n", inet_ntoa(peeraddr.sin_addr),
+                ntohs(peeraddr.sin_port));
+ 
+            FD_SET(conn, &allset);
+            if (conn > maxfd)
+                maxfd = conn;
+ 
+            if (--nready <= 0)
+                continue;
+        }
+ 
+        for (i = 0; i <= maxi; i++) {
+            conn = client[i];
+            if (conn == -1)
+                continue;
+ 
+            if (FD_ISSET(conn, &rset)) {
+                
+                char recvbuf[1024] = {0};
+                int ret = read(conn, recvbuf, 1024);
+                if (ret == -1)
+                    perror("readline error");
+                else if (ret  == 0) { //客户端关闭 
+                    printf("client close \n");
+                    FD_CLR(conn, &allset);
+                    client[i] = -1;
+                    close(conn);
+                }
+        
+                fputs(recvbuf, stdout);
+                write(conn, recvbuf, strlen(recvbuf));
+                
+                if (--nready <= 0)
+                    break; 
+            }
+        }
+ 
+ 
+    }
+        
+    return 0;
+}
+#+END_SRC 
+
+* Exp. 4th: Non-blocking Client
+
+** README
+  In this experiment, you will implement a TCP-based client with non-blocking
+  reads and writes, which uses two buffers to bring two pairs of producer
+  and consumer into line. The code fragment for the first pair, the standard
+  input and the sending socket, can be found in the sixth lecture note, so you 
+  need to implement the code for the pair of the receiving socket and the 
+  standard output.
+
+** The code
+
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <errno.h>
+#include <strings.h>
+#include <sys/select.h>
+#include <fcntl.h>
+#include <sys/time.h>
+#include <time.h>
+
+#define MAXLINE 4096
+int max(int a,int b)
+{
+    return (a>b?a:b);
+}
+char *gf_time(void)
+{
+	struct timeval	tv;
+	time_t			t;
+	static char		str[30];
+	char			*ptr;
+
+	if (gettimeofday(&tv, NULL) < 0)
+		perror("gettimeofday error");
+
+	t = tv.tv_sec;	/* POSIX says tv.tv_sec is time_t; some BSDs don't agree. */
+	ptr = ctime(&t);
+	strcpy(str, &ptr[11]);
+		/* Fri Sep 13 00:00:00 1986\n\0 */
+		/* 0123456789012345678901234 5  */
+	snprintf(str+8, sizeof(str)-8, ".%06ld", tv.tv_usec);
+
+	return(str);
+}
+
+
+void str_cli(FILE *fp, int sockfd)
+{
+    int			maxfdp1, val, stdineof;
+    ssize_t		n, nwritten;
+    fd_set		rset, wset;
+    char		to[MAXLINE], fr[MAXLINE];
+    char		*toiptr, *tooptr, *friptr, *froptr;
+
+    val = fcntl(sockfd, F_GETFL, 0);
+    fcntl(sockfd, F_SETFL, val | O_NONBLOCK);
+
+    val = fcntl(STDIN_FILENO, F_GETFL, 0);
+    fcntl(STDIN_FILENO, F_SETFL, val | O_NONBLOCK);
+
+    val = fcntl(STDOUT_FILENO, F_GETFL, 0);
+    fcntl(STDOUT_FILENO, F_SETFL, val | O_NONBLOCK);
+
+    toiptr = tooptr = to;	/* initialize buffer pointers */
+    friptr = froptr = fr;
+    stdineof = 0;
+
+    maxfdp1 = max(max(STDIN_FILENO, STDOUT_FILENO), sockfd) + 1;
+    for ( ; ; )
+    {
+        FD_ZERO(&rset);
+        FD_ZERO(&wset);
+        if (stdineof == 0 && toiptr < &to[MAXLINE])
+            FD_SET(STDIN_FILENO, &rset);	/* read from stdin */
+        if (friptr < &fr[MAXLINE])
+            FD_SET(sockfd, &rset);			/* read from socket */
+        if (tooptr != toiptr)
+            FD_SET(sockfd, &wset);			/* data to write to socket */
+        if (froptr != friptr)
+            FD_SET(STDOUT_FILENO, &wset);	/* data to write to stdout */
+
+        select(maxfdp1, &rset, &wset, NULL, NULL);
+        /* end nonb1 */
+        /* include nonb2 */
+        if (FD_ISSET(STDIN_FILENO, &rset))
+        {
+            if ( (n = read(STDIN_FILENO, toiptr, &to[MAXLINE] - toiptr)) < 0)
+            {
+                if (errno != EWOULDBLOCK)
+                    perror("read error on stdin");
+
+            }
+            else if (n == 0)
+            {
+#ifdef	VOL2
+                fprintf(stderr, "%s: EOF on stdin\n", gf_time());
+#endif
+                stdineof = 1;			/* all done with stdin */
+                if (tooptr == toiptr)
+                    shutdown(sockfd, SHUT_WR);/* send FIN */
+
+            }
+            else
+            {
+#ifdef	VOL2
+                fprintf(stderr, "%s: read %d bytes from stdin\n", gf_time(), n);
+#endif
+                toiptr += n;			/* # just read */
+                FD_SET(sockfd, &wset);	/* try and write to socket below */
+            }
+        }
+
+        if (FD_ISSET(sockfd, &rset))
+        {
+            if ( (n = read(sockfd, friptr, &fr[MAXLINE] - friptr)) < 0)
+            {
+                if (errno != EWOULDBLOCK)
+                    perror("read error on socket");
+
+            }
+            else if (n == 0)
+            {
+#ifdef	VOL2
+                fprintf(stderr, "%s: EOF on socket\n", gf_time());
+#endif
+                if (stdineof)
+                    return;		/* normal termination */
+                else
+                    perror("str_cli: server terminated prematurely");
+
+            }
+            else
+            {
+#ifdef	VOL2
+                fprintf(stderr, "%s: read %d bytes from socket\n",
+                        gf_time(), n);
+#endif
+                friptr += n;		/* # just read */
+                FD_SET(STDOUT_FILENO, &wset);	/* try and write below */
+            }
+        }
+        /* end nonb2 */
+        /* include nonb3 */
+        if (FD_ISSET(STDOUT_FILENO, &wset) && ( (n = friptr - froptr) > 0))
+        {
+            if ( (nwritten = write(STDOUT_FILENO, froptr, n)) < 0)
+            {
+                if (errno != EWOULDBLOCK)
+                    perror("write error to stdout");
+
+            }
+            else
+            {
+#ifdef	VOL2
+                fprintf(stderr, "%s: wrote %d bytes to stdout\n",
+                        gf_time(), nwritten);
+#endif
+                froptr += nwritten;		/* # just written */
+                if (froptr == friptr)
+                    froptr = friptr = fr;	/* back to beginning of buffer */
+            }
+        }
+
+        if (FD_ISSET(sockfd, &wset) && ( (n = toiptr - tooptr) > 0))
+        {
+            if ( (nwritten = write(sockfd, tooptr, n)) < 0)
+            {
+                if (errno != EWOULDBLOCK)
+                    perror("write error to socket");
+
+            }
+            else
+            {
+#ifdef	VOL2
+                fprintf(stderr, "%s: wrote %d bytes to socket\n",
+                        gf_time(), nwritten);
+#endif
+                tooptr += nwritten;	/* # just written */
+                if (tooptr == toiptr)
+                {
+                    toiptr = tooptr = to;	/* back to beginning of buffer */
+                    if (stdineof)
+                        shutdown(sockfd, SHUT_WR);	/* send FIN */
+                }
+            }
+        }
+    }
+}
+/* end nonb3 */
+
+
+int main(int argc, char *argv[])
+{
+    if(argc<2)    //检查输入参数
+        perror("usage:experiment2_client <server addr>");
+    
+    int sockfd;    //网络套接字
+    struct sockaddr_in server_addr;    //服务器地址
+    
+    /*socket函数*/
+    sockfd=socket(AF_INET, SOCK_STREAM, 0);
+    
+    /*配置服务器地址*/
+    bzero(&server_addr, sizeof(server_addr));
+    server_addr.sin_family=AF_INET;
+    server_addr.sin_port=htons(2222);
+    if((inet_pton(AF_INET, argv[1], &server_addr.sin_addr.s_addr)) < 0)
+        perror("invaild IP address");
+    
+    /*connect函数*/
+    if(connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+        perror("can't connect to server");
+    
+    /*ECHO处理函数*/
+    str_cli(stdin, sockfd);
+    
+    return 0;
+}
+#+END_SRC
+
+* Exp. 5th: Pre-allocated Process Server
+
+** README
+
+  In this experiment, your job is to implement a pre-allocated process server.
+  Before calling the API accept on the listening socket, the front-end server
+  process should create some child processes. Between each child and the 
+  front-end server, is there a full-duplex pipe created by socketpair. This pipe
+  can be used to transfer the socket descriptor returned by accept from the 
+  front-end process to the idle child on the other end of the pipe, or, 
+  reversely, the child sends a message to notify the front-end process that it
+  is available to deal new client requests.
+
+  You can use clients in Exp. 2nd or Exp. 4th to test your code.
+
+** The code
+#+BEGIN_SRC C
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <errno.h>
+#include <strings.h>
+#include <sys/select.h>
+#include <limits.h>
+#include <sys/stropts.h>
+#include <sys/resource.h>
+#include <netdb.h>
+#include <signal.h>
+
+
+
+#define MAXLINE 4096
+#define max(a,b) a>b?a:b;
+#define LISTENQ 1024
+
+typedef struct
+{
+	pid_t child_pid;
+	int child_pipefd;
+	int child_status;
+	long child_count;
+} Child;
+
+Child *cptr;
+
+pid_t child_make(int i, int listenfd, int addrlen)
+{
+	int sockfd[2];
+        pid_t pid;
+	void child_main(int, int, int);
+
+	socketpair(AF_LOCAL, SOCK_STREAM, 0, sockfd);
+
+	if( (pid = fork()) > 0)
+	{
+		close(sockfd[1]);
+		cptr[i].child_pid = pid;
+		cptr[i].child_pipefd = sockfd[0];
+		cptr[i].child_status = 0;
+		return (pid);
+	}
+	dup2(sockfd[1],STDERR_FILENO);
+	close(sockfd[0]);
+	close(sockfd[1]);
+	close(listenfd);
+	child_main(i, listenfd, addrlen);
+
+}
+ssize_t read_fd(int fd, void *ptr, size_t nbytes, int *recvfd)
+{
+        struct msghdr	msg;
+        struct iovec	iov[1];
+        ssize_t	n;
+
+        union {
+          struct cmsghdr cm;
+          char	control[CMSG_SPACE(sizeof(int))];
+        } control_un;
+        struct cmsghdr	*cmptr;
+
+        msg.msg_control = control_un.control;
+        msg.msg_controllen = sizeof(control_un.control);
+
+
+        msg.msg_name = NULL;
+        msg.msg_namelen = 0;
+
+        iov[0].iov_base = ptr;
+        iov[0].iov_len = nbytes;
+        msg.msg_iov = iov;
+        msg.msg_iovlen = 1;
+
+        if ( (n = recvmsg(fd, &msg, 0)) <= 0)
+                return(n);
+
+        if ( (cmptr = CMSG_FIRSTHDR(&msg)) != NULL &&
+            cmptr->cmsg_len == CMSG_LEN(sizeof(int))) {
+                if (cmptr->cmsg_level != SOL_SOCKET)
+                        perror("control level != SOL_SOCKET");
+                if (cmptr->cmsg_type != SCM_RIGHTS)
+                        perror("control type != SCM_RIGHTS");
+                *recvfd = *((int *) CMSG_DATA(cmptr));
+        } else
+                *recvfd = -1;		/* descriptor was not passed */
+
+
+        return(n);
+}
+/* end read_fd */
+
+ssize_t Read_fd(int fd, void *ptr, size_t nbytes, int *recvfd)
+{
+        ssize_t		n;
+
+        if ( (n = read_fd(fd, ptr, nbytes, recvfd)) < 0)
+                perror("read_fd error");
+
+        return(n);
+}
+
+
+ssize_t write_fd(int fd, void *ptr, size_t nbytes, int sendfd)
+{
+        struct msghdr	msg;
+        struct iovec	iov[1];
+
+
+        union 
+	{
+          struct cmsghdr cm;
+          char	control[CMSG_SPACE(sizeof(int))];
+        } control_un;
+        struct cmsghdr	*cmptr;
+
+        msg.msg_control = control_un.control;
+        msg.msg_controllen = sizeof(control_un.control);
+
+        cmptr = CMSG_FIRSTHDR(&msg);
+        cmptr->cmsg_len = CMSG_LEN(sizeof(int));
+        cmptr->cmsg_level = SOL_SOCKET;
+        cmptr->cmsg_type = SCM_RIGHTS;
+        *((int *) CMSG_DATA(cmptr)) = sendfd;
+
+
+        msg.msg_name = NULL;
+        msg.msg_namelen = 0;
+
+        iov[0].iov_base = ptr;
+        iov[0].iov_len = nbytes;
+        msg.msg_iov = iov;
+        msg.msg_iovlen = 1;
+
+        return(sendmsg(fd, &msg, 0));
+}
+/* end write_fd */
+
+ssize_t Write_fd(int fd, void *ptr, size_t nbytes, int sendfd)
+{
+        ssize_t	n;
+
+        if ( (n = write_fd(fd, ptr, nbytes, sendfd)) < 0)
+                perror("write_fd error");
+
+        return(n);
+}
+
+void child_main(int i, int listenfd, int addrlen)
+{
+	char c;
+	int connfd;
+	ssize_t n;
+	void web_child(int);
+
+	printf("child %ld starting\n", (long) getpid());
+	
+	for( ; ; )
+	{
+        	if( (n = Read_fd(STDERR_FILENO, &c, 1, &connfd)) == 0 )
+			perror("read_fd returnef 0");
+		if(connfd < 0)
+			perror("noo descriptor form read_fd");
+		web_child(connfd);
+		close(connfd);
+        	write(STDERR_FILENO, "", 1);
+	}	
+}
+
+#define	MAXN	16384		/* max # bytes client can request */
+
+void web_child(int sockfd)
+{
+        /*int	ntowrite;
+        ssize_t	nread;
+        char	line[MAXLINE], result[MAXN];
+	char buf[MAXLINE];
+
+        for ( ; ; ) 
+        {
+             	if ( (nread = read(sockfd, line, MAXLINE)) == 0)
+                	return;		 
+            	ntowrite = atol(line);
+            	if ((ntowrite <= 0) || (ntowrite > MAXN))
+                printf("client request for %d bytes", ntowrite);
+
+           	 write(sockfd, result, ntowrite);
+        }*/
+
+	ssize_t n;
+	char buf[1000];
+        bzero(buf,1000);
+	
+	while((n = read(sockfd, buf, 1000)) > 0) //读取客户端的数据 
+	{
+		if(write(STDOUT_FILENO,buf,n)<0) //输出数据到屏幕 
+			perror("write error");
+		if(write(sockfd,buf,n)<0)   //写数据到客户端 
+			perror("write error");
+	}
+	
+	if(n<0)
+		perror("read error");
+        close(sockfd);
+}
+
+int tcp_listen(const char *host, const char *serv, socklen_t *addrlenp)
+{
+	int				listenfd, n;
+	const int		on = 1;
+	struct addrinfo hint;
+    struct addrinfo *res, *ressave;
+
+	bzero(&hint, sizeof(hint));
+	hint.ai_flags = AI_PASSIVE;
+	hint.ai_family = AF_UNSPEC;
+    	hint.ai_socktype = SOCK_STREAM;
+
+	if ( (n = getaddrinfo(host, serv, &hint, &res)) != 0)
+                printf("tcp_listen error for %s, %s: %s",
+				 host, serv, gai_strerror(n));
+	ressave = res;
+
+	do {
+        listenfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+		if (listenfd < 0)
+			continue;		/* error, try next one */
+
+        setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+		if (bind(listenfd, res->ai_addr, res->ai_addrlen) == 0)
+			break;			/* success */
+
+        close(listenfd);	/* bind error, close and try next one */
+	} while ( (res = res->ai_next) != NULL);
+
+	if (res == NULL)	/* errno from final socket() or bind() */
+        printf("tcp_listen error for %s, %s", host, serv);
+
+        listen(listenfd, LISTENQ);
+
+	if (addrlenp)
+		*addrlenp = res->ai_addrlen;	/* return size of protocol address */
+
+	freeaddrinfo(ressave);
+
+	return(listenfd);
+}
+/* end tcp_listen */
+
+/*
+ * We place the wrapper function here, not in wraplib.c, because some
+ * XTI programs need to include wraplib.c, and it also defines
+ * a Tcp_listen() function.
+ */
+
+int Tcp_listen(const char *host, const char *serv, socklen_t *addrlenp)
+{
+	return(tcp_listen(host, serv, addrlenp));
+}
+
+
+static int nchildren;
+
+
+int main(int argc, char **argv)
+{
+	int	listenfd, i, navail, maxfd, nsel, connfd, rc;
+	void	sig_int(int);
+	pid_t	child_make(int, int, int);
+	ssize_t	n;
+	fd_set	rset, masterset;
+	socklen_t addrlen, clilen;
+	struct sockaddr	*cliaddr;
+
+	if (argc == 3)
+		listenfd = Tcp_listen(NULL, argv[1], &addrlen);
+	else if (argc == 4)
+		listenfd = Tcp_listen(argv[1], argv[2], &addrlen);
+	else
+        perror("usage: serv05 [ <host> ] <port#> <#children>");
+
+	FD_ZERO(&masterset);
+	FD_SET(listenfd, &masterset);
+    	maxfd = listenfd;
+    	cliaddr = malloc(addrlen);
+
+	nchildren = atoi(argv[argc-1]);
+	navail = nchildren;
+    	cptr = calloc(nchildren, sizeof(Child));
+
+		/* 4prefork all the children */
+	for (i = 0; i < nchildren; i++) 
+	{
+		child_make(i, listenfd, addrlen);	/* parent returns */
+		FD_SET(cptr[i].child_pipefd, &masterset);
+		maxfd = max(maxfd, cptr[i].child_pipefd);
+	}
+
+	signal(SIGINT, sig_int);
+
+	for ( ; ; ) 
+    	{
+		rset = masterset;
+		if (navail <= 0)
+			FD_CLR(listenfd, &rset);	/* turn off if no available children */
+        	nsel = select(maxfd + 1, &rset, NULL, NULL, NULL);
+
+			/* 4check for new connections */
+		if (FD_ISSET(listenfd, &rset)) 
+        	{
+			clilen = addrlen;
+            		connfd = accept(listenfd, cliaddr, &clilen);
+			for (i = 0; i < nchildren; i++)
+				if (cptr[i].child_status == 0)
+					break;				/* available */
+
+			if (i == nchildren)
+                	perror("no available children");
+			cptr[i].child_status = 1;	/* mark child as busy */
+			cptr[i].child_count++;
+			navail--;
+
+			n = Write_fd(cptr[i].child_pipefd, "", 1, connfd);
+                	close(connfd);
+			if (--nsel == 0)
+				continue;	/* all done with select() results */
+		}
+
+			/* 4find any newly-available children */
+		for (i = 0; i < nchildren; i++) 
+		{
+			if (FD_ISSET(cptr[i].child_pipefd, &rset))
+		 	{
+                		if ( (n = read(cptr[i].child_pipefd, &rc, 1)) == 0)
+                        	printf("child %d terminated unexpectedly", i);
+				cptr[i].child_status = 0;
+				navail++;
+				if (--nsel == 0)
+					break;	/* all done with select() results */
+			}
+		}
+	}
+}
+/* end serv05a */
+
+void pr_cpu_time(void)
+{
+        double			user, sys;
+        struct rusage	myusage, childusage;
+
+        if (getrusage(RUSAGE_SELF, &myusage) < 0)
+                perror("getrusage error");
+        if (getrusage(RUSAGE_CHILDREN, &childusage) < 0)
+                perror("getrusage error");
+
+        user = (double) myusage.ru_utime.tv_sec +
+                                        myusage.ru_utime.tv_usec/1000000.0;
+        user += (double) childusage.ru_utime.tv_sec +
+                                         childusage.ru_utime.tv_usec/1000000.0;
+        sys = (double) myusage.ru_stime.tv_sec +
+                                   myusage.ru_stime.tv_usec/1000000.0;
+        sys += (double) childusage.ru_stime.tv_sec +
+                                        childusage.ru_stime.tv_usec/1000000.0;
+
+        printf("\nuser time = %g, sys time = %g\n", user, sys);
+}
+
+void sig_int(int signo)
+{
+	int i;
+	void pr_cpu_time(void);
+
+		/* 4terminate all children */
+	for (i = 0; i < nchildren; i++)
+		kill(cptr[i].child_pid, SIGTERM);
+	while (wait(NULL) > 0)		/* wait for all children */
+		;
+	if (errno != ECHILD)
+		perror("wait error");
+
+	pr_cpu_time();
+
+	for (i = 0; i < nchildren; i++)
+		printf("child %d, %ld connections\n", i, cptr[i].child_count);
+
+	exit(0);
+}
+#+END_SRC
